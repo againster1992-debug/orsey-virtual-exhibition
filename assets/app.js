@@ -1040,6 +1040,12 @@
     if (!quiet) toast(should ? '全屏查看 · 拖动浏览，双指缩放' : '已退出全屏');
   }
 
+  // 微信文章图床的 /640 只是文章内展示尺寸，/0 才是原图。
+  // data.js 的 full 字段已存 /0；这里再兜底归一化，避免旧数据或重新构建时退回压缩图。
+  function originalSrc(url) {
+    return String(url || '').replace(/\/(?:640|750|1080)(\?|$)/, '/0$1');
+  }
+
   function renderViewer(ex, imgIndex) {
     const im = ex.images[imgIndex] || ex.hero;
     const v = state.viewer;
@@ -1049,24 +1055,30 @@
     v.visualW = v.rotated ? v.natH : v.natW;
     v.visualH = v.rotated ? v.natW : v.natH;
     const img = $('#viewerImg');
+    const full = originalSrc(im.full || im.src);
+    const preview = im.src || full;
     img.onerror = null;
     img.onload = null;
     img.referrerPolicy = 'no-referrer';
-    img.src = im.full;
+    img.src = full;
     img.alt = `${ex.name} · 图${imgIndex + 1}`;
-    img.dataset.fallback = '';
-    img.dataset.retried = '';
+    img.dataset.step = 'full';
     img.onload = () => {
-      // 微信图床偶发返回小尺寸占位图，检测到后带参数重取一次
-      if (img.naturalWidth > 0 && img.naturalWidth <= 200 && img.dataset.retried !== '1') {
-        img.dataset.retried = '1';
-        img.src = `${im.src}&r=${Date.now()}`;
+      // 微信图床偶发返回小尺寸占位图：先带参数重取原图，再退回预览图
+      if (img.naturalWidth > 0 && img.naturalWidth <= 200) {
+        if (img.dataset.step === 'full') {
+          img.dataset.step = 'full-retry';
+          img.src = `${full}&r=${Date.now()}`;
+        } else if (img.dataset.step === 'full-retry') {
+          img.dataset.step = 'preview';
+          img.src = preview;
+        }
       }
     };
     img.onerror = () => {
-      if (img.dataset.fallback !== '1') {
-        img.dataset.fallback = '1';
-        img.src = im.src;
+      if (img.dataset.step === 'full' || img.dataset.step === 'full-retry') {
+        img.dataset.step = 'preview';
+        img.src = preview;
       }
     };
     fitViewer(initialViewerMode());
@@ -1292,18 +1304,20 @@
     const rotate = state.viewer.rotated;
     const fileName = `獭的游乐场_${String(ex.name).replace(/[\\/:*?"<>|]/g, '_')}.jpg`;
     toast('正在准备大图…');
-    let img;
+    const original = originalSrc(im.full || im.src);
+    const candidates = [...new Set([original, im.full, im.src].filter(Boolean))];
+    let img = null;
     let lowRes = false;
-    try {
-      img = await loadDownloadImage(im.full);
-    } catch (e) {
+    for (const src of candidates) {
       try {
-        img = await loadDownloadImage(im.src);
-        lowRes = true;
-      } catch (err) {
-        toast('图片加载失败，暂时无法保存');
-        return;
-      }
+        img = await loadDownloadImage(src);
+        lowRes = src !== original;
+        break;
+      } catch (e) { /* try next candidate */ }
+    }
+    if (!img) {
+      toast('图片加载失败，暂时无法保存');
+      return;
     }
     const srcW = img.naturalWidth;
     const srcH = img.naturalHeight;
