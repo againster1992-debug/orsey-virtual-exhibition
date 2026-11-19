@@ -2831,4 +2831,31 @@ button:focus-visible, input:focus-visible { box-shadow: 0 0 0 2px rgba(198, 167,
   outline: none;
 }
 
+/* ---------- 展墙图片直接显示原图，不加金黄虚拟画框 ---------- */
+.artwork .frame,
+.artwork:hover .frame,
+.artwork:focus-visible .frame,
+.artwork.tap-pop .frame {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.52), 0 6px 16px rgba(0, 0, 0, 0.36);
+}
+.artwork .frame::before,
+.artwork .frame::after {
+  display: none;
+}
+.artwork .frame .mat {
+  inset: 0;
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.artwork .frame .mat img {
+  border: 0;
+  box-shadow: none;
+  background: #0b120e;
+}
+
+
 
