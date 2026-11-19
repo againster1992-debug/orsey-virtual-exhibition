@@ -1624,7 +1624,33 @@
   /* ---------- 艺术家关系图 ---------- */
   const REL_COLORS = { '师承': '#c9a45c', '挚友': '#6fa3b8', '同道': '#8a9a5b', '影响': '#c97b4a', '论争': '#b0524a' };
   const CLUSTER_COLORS = { '学院派': '#c9a45c', '现实主义': '#8a9a5b', '印象派': '#6fa3b8', '后印象派': '#c97b4a', '新印象派': '#7c6fb0', '纳比派': '#b06f8f' };
+  const REL_WEIGHT = { '影响': 2, '师承': 1.7, '挚友': 0.8, '同道': 0.7, '论争': 0.5 };
   let networkBuilt = false;
+
+  // 节点大小 = 关系数量 + 关系类型权重（师承/影响更重）+ 参展作品数。
+  // 先按全局最高/最低分归一化，再用幂函数拉开核心画家与边缘画家的差距。
+  function networkRadiusMap(nodes, edges) {
+    const works = new Map();
+    FLAT.forEach(f => works.set(f.ex.artistId, (works.get(f.ex.artistId) || 0) + (f.ex.workCount || 1)));
+    const influence = new Map(nodes.map(n => [n.id, 0]));
+    edges.forEach(e => {
+      const w = REL_WEIGHT[e.type] || 0.6;
+      influence.set(e.a, (influence.get(e.a) || 0) + w);
+      influence.set(e.b, (influence.get(e.b) || 0) + w);
+    });
+    const scored = nodes.map(n => ({
+      id: n.id,
+      score: (influence.get(n.id) || 0) + Math.log2((works.get(n.id) || 0) + 1) * 0.8
+    }));
+    const min = Math.min(...scored.map(s => s.score));
+    const max = Math.max(...scored.map(s => s.score));
+    const radii = new Map();
+    scored.forEach(s => {
+      const t = max > min ? (s.score - min) / (max - min) : 0.5;
+      radii.set(s.id, Math.round((12 + 22 * Math.pow(t, 0.7)) * 10) / 10);
+    });
+    return radii;
+  }
 
   function openNetwork() {
     hideToast();
@@ -1647,9 +1673,49 @@
       key => { state.networkSchool = key; renderNetworkSchoolFilters(); applyNetworkFilter(); });
   }
 
+  // 放大核心节点后，标签容易压到相邻圆圈；按“下→上→右→左→四角”依次找空位。
+  function placeNetworkLabels(items) {
+    const placed = [];
+    const hitsRect = (a, b) => a.x1 < b.x2 + 2 && a.x2 + 2 > b.x1 && a.y1 < b.y2 + 2 && a.y2 + 2 > b.y1;
+    const hitsCircle = (rect, n) => {
+      const cx = Math.max(rect.x1, Math.min(n.x, rect.x2));
+      const cy = Math.max(rect.y1, Math.min(n.y, rect.y2));
+      return Math.hypot(cx - n.x, cy - n.y) < n.r + 2;
+    };
+    [...items].sort((a, b) => b.r - a.r).forEach(item => {
+      const r = item.r;
+      const candidates = [
+        ['middle', 0, r + 14],
+        ['middle', 0, -r - 6],
+        ['start', r + 6, 4],
+        ['end', -r - 6, 4],
+        ['start', r * 0.72 + 4, r * 0.72 + 10],
+        ['end', -r * 0.72 - 4, r * 0.72 + 10],
+        ['start', r * 0.72 + 4, -r * 0.72 - 4],
+        ['end', -r * 0.72 - 4, -r * 0.72 - 4]
+      ];
+      const measure = ([anchor, dx, dy]) => {
+        item.label.setAttribute('text-anchor', anchor);
+        item.label.setAttribute('x', dx);
+        item.label.setAttribute('y', dy);
+        const b = item.label.getBBox();
+        return { x1: item.x + b.x, y1: item.y + b.y, x2: item.x + b.x + b.width, y2: item.y + b.y + b.height };
+      };
+      let rect = null;
+      let ok = false;
+      for (const c of candidates) {
+        rect = measure(c);
+        if (!items.some(n => n !== item && hitsCircle(rect, n)) && !placed.some(p => hitsRect(rect, p))) { ok = true; break; }
+      }
+      if (!ok) rect = measure(candidates[0]);
+      placed.push(rect);
+    });
+  }
+
   function buildNetwork() {
     const { nodes, edges, width, height } = DATA.graph;
     const byId = new Map((DATA.artists || []).map(a => [a.id, a]));
+    const radii = networkRadiusMap(nodes, edges);
     const svg = $('#netViewport');
     svg.innerHTML = '';
     const edgeLayer = document.createElementNS('http://www.w3.org/2000/svg', 'g');
@@ -1671,6 +1737,7 @@
       line.appendChild(title);
       edgeLayer.appendChild(line);
     });
+    const labelItems = [];
     nodes.forEach(n => {
       const a = byId.get(n.id);
       if (!a) return;
@@ -1679,11 +1746,12 @@
       g.setAttribute('transform', `translate(${n.x},${n.y})`);
       g.dataset.id = n.id;
       g.dataset.cluster = a.cluster;
-      const r = 15 + Math.min(11, (n.degree || 0) * 1.1);
+      const r = radii.get(n.id) || 12;
       const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
       circle.setAttribute('r', r);
       circle.setAttribute('fill', CLUSTER_COLORS[a.cluster] || '#c9a45c');
       circle.setAttribute('fill-opacity', '0.9');
+      circle.dataset.r = r;
       const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
       label.setAttribute('y', r + 14);
       label.setAttribute('text-anchor', 'middle');
@@ -1696,9 +1764,11 @@
       g.appendChild(title);
       g.addEventListener('click', ev => { ev.stopPropagation(); selectNetworkArtist(n.id, true); });
       nodeLayer.appendChild(g);
+      labelItems.push({ x: n.x, y: n.y, r, label });
     });
     svg.appendChild(edgeLayer);
     svg.appendChild(nodeLayer);
+    placeNetworkLabels(labelItems);
     $('#netLegend').innerHTML = Object.entries(REL_COLORS).map(([k, c]) => `<span><i style="background:${c}"></i>${k}</span>`).join('');
     applyNetworkView();
   }
