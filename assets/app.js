@@ -857,6 +857,17 @@
       <div class="tag-list">${tags.map(t => `<button type="button" class="tag-chip ${esc(t.kind)}" data-tag="${esc(t.name)}" data-kind="${esc(t.kind)}" title="点击查看「${esc(t.name)}」百科">${esc(t.name)}</button>`).join('')}</div>`;
   }
 
+  function wikiWorkCard(f, meta) {
+    const ex = f.ex;
+    const im = ex.hero || (ex.images && ex.images[0]) || {};
+    const wc = ex.workCount || 1;
+    const metaText = [meta, wc > 1 ? `共 ${wc} 件` : ''].filter(Boolean).join(' · ');
+    return `<button type="button" class="tw-work-card" data-id="${esc(ex.id)}">
+      <span class="tw-card-img"><img loading="lazy" decoding="async" referrerpolicy="no-referrer" src="${esc(im.src || '')}" alt="${esc(ex.name)}"></span>
+      <span class="tw-card-body"><b>${esc(ex.name)}</b><small>${esc(metaText)}</small></span>
+    </button>`;
+  }
+
   function openTagWiki(name, kind) {
     if (!name) return;
     const currentId = state.detail ? DATA.rooms[state.detail.ri].exhibits[state.detail.ei].id : '';
@@ -866,12 +877,12 @@
     $('#twKind').textContent = TAG_KIND_LABEL[kind] || '';
     $('#twBody').innerHTML = `<p>${esc(tagWikiText(name))}</p>`;
     $('#twWorks').innerHTML = related.length
-      ? related.map(f => `<button type="button" class="tw-work" data-id="${esc(f.ex.id)}">${esc(f.ex.name)}<small>${esc(f.room.title)} · ${esc(f.ex.artist)}</small></button>`).join('')
+      ? related.map(f => wikiWorkCard(f, `${f.ex.artist} · ${f.room.title}`)).join('')
       : '<p class="tw-empty">暂无其他相关展品。</p>';
     if (allRelated.length > related.length) {
       $('#twWorks').insertAdjacentHTML('beforeend', `<p class="tw-empty">共 ${allRelated.length} 件相关展品，展示前 ${related.length} 件。</p>`);
     }
-    $$('.tw-work', $('#twWorks')).forEach(btn => {
+    $$('.tw-work-card', $('#twWorks')).forEach(btn => {
       btn.addEventListener('click', () => {
         const item = FLAT.find(f => f.ex.id === btn.dataset.id);
         closeTagWiki();
@@ -897,7 +908,7 @@
     $('#awBody').innerHTML = `<p>${esc(artist.blurb)}</p>`;
     const works = FLAT.filter(f => f.ex.artistId === id);
     $('#awWorks').innerHTML = works.length
-      ? works.map(f => `<button type="button" class="tw-work" data-id="${esc(f.ex.id)}">${esc(f.ex.name)}<small>${esc(f.ex.yearLabel)} · ${esc(f.room.title)}</small></button>`).join('')
+      ? works.map(f => wikiWorkCard(f, `${f.ex.yearLabel} · ${f.room.title}`)).join('')
       : '<p class="tw-empty">本展暂无作品。</p>';
     const rels = (DATA.relations || []).filter(r => r.a === id || r.b === id);
     const byId = new Map((DATA.artists || []).map(a => [a.id, a]));
@@ -907,7 +918,7 @@
           return `<button type="button" class="tw-work" data-artist="${esc(other.id)}"><b>${esc(r.type)}</b> ${esc(other.name)}<small>${esc(r.note)}</small></button>`;
         }).join('')
       : '<p class="tw-empty">暂无记录。</p>';
-    $$('#awWorks .tw-work').forEach(btn => btn.addEventListener('click', () => {
+    $$('#awWorks .tw-work-card').forEach(btn => btn.addEventListener('click', () => {
       const f = FLAT.find(x => x.ex.id === btn.dataset.id);
       if (!f) return;
       closeArtistWiki();
@@ -1482,10 +1493,11 @@
   /* ---------- 时间轴 ---------- */
   const TL_MIN = 1840, TL_MAX = 1920;
   const TL_STATE = {
-    built: false, px: 74, height: 600, dragging: false,
+    built: false, px: 74, height: 600, zoom: 1, dragging: false,
     startX: 0, startScroll: 0, scrolled: false
   };
-  const timelinePx = () => (window.innerWidth <= 720 ? 56 : 74);
+  const timelineBasePx = () => (window.innerWidth <= 720 ? 56 : 74);
+  const timelinePx = () => timelineBasePx() * TL_STATE.zoom;
   const timelineHeight = () => (window.innerWidth <= 720 ? 540 : 600);
 
   function openTimeline() {
@@ -1619,6 +1631,44 @@
     scroll.addEventListener('pointerup', end);
     scroll.addEventListener('pointercancel', end);
     scroll.addEventListener('pointerleave', end);
+  }
+
+  // 滚轮缩放时间轴：只改变年份间距，缩略图尺寸保持不变，避免纵向堆叠溢出。
+  function bindTimelineZoom() {
+    const scroll = $('#tlScroll');
+    if (!scroll) return;
+    let raf = 0;
+    let pending = null;
+    scroll.addEventListener('wheel', e => {
+      if ($('#timeline').hidden) return;
+      e.preventDefault();
+      const rect = scroll.getBoundingClientRect();
+      const offsetX = e.clientX - rect.left;
+      const factor = Math.exp(-e.deltaY * 0.0015);
+      if (pending) {
+        pending.factor *= factor;
+        pending.offsetX = offsetX;
+        pending.contentX = scroll.scrollLeft + offsetX;
+      } else {
+        pending = { factor, offsetX, contentX: scroll.scrollLeft + offsetX };
+      }
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        const p = pending;
+        pending = null;
+        const base = timelineBasePx();
+        const nodeW = window.innerWidth <= 720 ? 54 : 62;
+        const minZoom = Math.max((nodeW + 6) / base, 0.5);
+        const nextZoom = clamp(TL_STATE.zoom * p.factor, minZoom, 2.4);
+        const nextPx = base * nextZoom;
+        if (Math.abs(nextPx - TL_STATE.px) < 0.4) return;
+        const year = TL_MIN + p.contentX / TL_STATE.px;
+        TL_STATE.zoom = nextZoom;
+        buildTimeline();
+        scroll.scrollLeft = Math.max(0, (year - TL_MIN) * TL_STATE.px - p.offsetX);
+      });
+    }, { passive: false });
   }
 
   /* ---------- 艺术家关系图 ---------- */
@@ -2152,11 +2202,13 @@
     $('#timelineResetBtn').addEventListener('click', () => {
       state.timelineSchool = 'all';
       renderTimelineSchoolFilters();
-      applyTimelineFilter();
+      TL_STATE.zoom = 1;
+      buildTimeline();
       const sc = $('#tlScroll');
-      if (sc) sc.scrollLeft = Math.max(0, (1880 - TL_MIN) * (TL_STATE.px || timelinePx()) - 60);
+      if (sc) sc.scrollLeft = Math.max(0, (1880 - TL_MIN) * TL_STATE.px - 60);
     });
     bindTimelineDrag();
+    bindTimelineZoom();
 
     // 关系图
     $('#networkCloseBtn').addEventListener('click', closeNetwork);
